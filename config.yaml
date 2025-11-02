@@ -1,0 +1,6 @@
+input_data:
+  file: "../data/raw/wine_food_pairings_raw.csv"
+  
+output_data:
+  file: "../data/clean/"
+
