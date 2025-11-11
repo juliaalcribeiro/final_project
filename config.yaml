@@ -2,5 +2,7 @@ input_data:
   file: "../data/raw/wine_food_pairings_raw.csv"
   
 output_data:
-  file: "../data/clean/"
+  train_file: "../data/clean/train_file.csv"
+  test_file: "../data/clean/test_file.csv"
+  labels_file: "../data/clean/labels_file.csv"
 
