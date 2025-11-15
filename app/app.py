@@ -1,183 +1,202 @@
 # ======================================================
-# Wine Pairing Recommender - Streamlit App (Top 5 Wines)
+# Wine–Food Pairing Recommender – Streamlit App (Top-5)
 # ======================================================
 
 import streamlit as st
 import pandas as pd
-import joblib
 import numpy as np
 import yaml
 import os
+import joblib
 
 # ======================================================
-# 1. Load dataset and model
+# 1. Load configuration, dataset, and model
 # ======================================================
 
 @st.cache_data
-def load_data():
-    """Load dataset from config.yaml relative to script location."""
+def load_config_and_data():
+    """Loads config.yaml and dataset."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
     yaml_path = os.path.join(script_dir, "../config.yaml")
 
     if not os.path.exists(yaml_path):
-        raise FileNotFoundError(f"Yaml configuration file not found at {yaml_path}")
+        raise FileNotFoundError(f"config.yaml not found at {yaml_path}")
 
     with open(yaml_path, "r") as file:
         config = yaml.safe_load(file)
 
-    csv_file = config.get('input_data', {}).get('file')
-    if not csv_file:
-        raise ValueError("CSV file path not found in config.yaml under 'input_data.file'")
+    csv_path = config["input_data"]["file"]
 
-    if not os.path.isabs(csv_file):
-        csv_file = os.path.join(script_dir, csv_file)
+    if not os.path.isabs(csv_path):
+        csv_path = os.path.join(script_dir, csv_path)
 
-    if not os.path.exists(csv_file):
-        raise FileNotFoundError(f"CSV file not found at {csv_file}")
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"Dataset not found at {csv_path}")
 
-    df = pd.read_csv(csv_file)
-    return df
+    df0 = pd.read_csv(csv_path)
+    return df0
+
 
 @st.cache_resource
 def load_model():
-    """Load trained LightGBM model safely."""
+    """Loads the LightGBM trained model."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
     model_path = os.path.join(script_dir, "../notebook/lgb_pairing_model.joblib")
 
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file not found at {model_path}")
 
-    model = joblib.load(model_path)
-    return model
+    return joblib.load(model_path)
 
-# Load data and model
-df = load_data()
+
+# Load data
+df0 = load_config_and_data()
 model = load_model()
 
-# Min/max for scaling predictions back
-min_r = df["pairing_quality"].min()
-max_r = df["pairing_quality"].max()
 
 # ======================================================
-# 2. Precompute mappings for factorization and target encoding
+# 2. Rebuild identical feature engineering (training logic)
 # ======================================================
 
-cols_to_factor = ["food_item", "food_category", "cuisine", "wine_category", "wine_type"]
+target_col = "pairing_quality"
 
-id_mappings = {}
-te_mappings = {}
-for col in cols_to_factor:
-    _, ids = pd.factorize(df[col])
-    id_mappings[col] = dict(zip(df[col], ids))
-    te_mappings[col] = df.groupby(col)["pairing_quality"].mean().to_dict()
+group_cols = [
+    c for c in ["wine_type", "wine_category", "food_item",
+                "food_category", "cuisine"]
+    if c in df0.columns
+]
+
+# Aggregate dataset
+df = df0.groupby(group_cols)[target_col].mean().reset_index()
+
+# Scaling parameters
+min_r, max_r = df[target_col].min(), df[target_col].max()
+df["target_scaled"] = (df[target_col] - min_r) / (max_r - min_r)
+
+# Category columns (same order as training)
+cat_cols = group_cols.copy()
+
+# Build feature columns used during model training
+feature_cols = []
+for c in cat_cols:
+    feature_cols += [c + "_id", c + "_te"]
+feature_cols += ["wine_cuisine_cross_id", "wine_foodcat_cross_id"]
+
+
+# ----------------- Helper Functions --------------------
+
+def factorize_and_map(df_full, df_query, col):
+    """Map factorized IDs exactly as during training."""
+    _, uniques = pd.factorize(df_full[col])
+    mapping = {v: i for i, v in enumerate(uniques)}
+    return df_query[col].map(mapping).fillna(-1).astype(int)
+
+
+def target_encode(df_full, df_query, col):
+    """Target encoding using mean target_scaled per category."""
+    te_map = df_full.groupby(col)["target_scaled"].mean()
+    global_mean = df_full["target_scaled"].mean()
+    return df_query[col].map(te_map).fillna(global_mean)
+
+
+def make_cross_for_query(df_full, df_query, colA, colB, new_col_name):
+    """Cross-feature encoding exactly like training."""
+    full_cross = (df_full[colA].astype(str) + "||" + df_full[colB].astype(str))
+    _, uniques = pd.factorize(full_cross)
+    mapping = {v: i for i, v in enumerate(uniques)}
+
+    query_cross = (df_query[colA].astype(str) + "||" + df_query[colB].astype(str))
+    df_query[new_col_name] = query_cross.map(mapping).fillna(-1).astype(int)
+    return df_query
+
 
 # ======================================================
-# 3. Prepare dropdown lists
+# 3. Recommendation Function – Top 5 Wines
 # ======================================================
 
+def recommend_wines(food_item, food_category, cuisine, wine_category_filter=None):
+    """Returns Top-5 wines with pairing_quality score."""
+
+    # Candidate wines
+    wines = df[["wine_type", "wine_category"]].drop_duplicates()
+
+    if wine_category_filter:
+        wines = wines[wines["wine_category"] == wine_category_filter]
+
+    if wines.empty:
+        raise ValueError("No wines available for this wine_category.")
+
+    # Build query dataframe
+    q = wines.copy()
+    q["food_item"] = food_item
+    q["food_category"] = food_category
+    q["cuisine"] = cuisine
+
+    # Apply feature engineering to the query
+    for c in cat_cols:
+        q[c + "_id"] = factorize_and_map(df, q, c)
+        q[c + "_te"] = target_encode(df, q, c)
+
+    q = make_cross_for_query(df, q, "wine_type", "cuisine", "wine_cuisine_cross_id")
+    q = make_cross_for_query(df, q, "wine_type", "food_category", "wine_foodcat_cross_id")
+
+    # Prepare input
+    Xq = q[feature_cols]
+
+    # Model prediction
+    q["pred_scaled"] = model.predict(Xq)
+    q["pred_score"] = q["pred_scaled"] * (max_r - min_r) + min_r
+
+    # If the exact real score exists in dataset, use it
+    merged = q.merge(
+        df[group_cols + [target_col]],
+        on=group_cols,
+        how="left"
+    )
+
+    merged["final_score"] = merged[target_col].fillna(merged["pred_score"])
+
+    # Top 5
+    top5 = (
+        merged[["wine_type", "wine_category", "final_score"]]
+        .sort_values("final_score", ascending=False)
+        .head(5)
+        .reset_index(drop=True)
+    )
+
+    return top5
+
+
+# ======================================================
+# 4. Streamlit Interface
+# ======================================================
+
+st.set_page_config(page_title="Wine Pairing Recommender", page_icon="🍷")
+st.title("🍷 Wine–Food Pairing – Top 5 Recommendations")
+st.write("Select your food options and get the Top-5 wine recommendations.")
+
+# Dropdown options
 food_items = sorted(df["food_item"].unique())
 food_categories = sorted(df["food_category"].unique())
 cuisines = sorted(df["cuisine"].unique())
 wine_categories = sorted(df["wine_category"].unique())
 
-# ======================================================
-# 4. Feature preparation for prediction
-# ======================================================
-
-def prepare_features_for_wine(food_item, food_category, cuisine, wine_category, wine_type):
-    """
-    Convert a food + wine combination into model input features.
-    Ensures numeric features and includes cross features.
-    """
-    row = pd.DataFrame([{
-        "food_item": food_item,
-        "food_category": food_category,
-        "cuisine": cuisine,
-        "wine_category": wine_category,
-        "wine_type": wine_type
-    }])
-
-    # Factorize IDs
-    for col in cols_to_factor:
-        row[col + "_id"] = id_mappings[col].get(row.at[0, col], -1)
-
-    # Target encoding
-    for col in cols_to_factor:
-        row[col + "_te"] = te_mappings[col].get(row.at[0, col], df["pairing_quality"].mean())
-
-    # Cross features (hash to int for LightGBM)
-    row["wine_cuisine_cross_id"] = int(hash(f"{wine_type}||{cuisine}") % 10000)
-    row["wine_foodcat_cross_id"] = int(hash(f"{wine_type}||{food_category}") % 10000)
-
-    feature_cols = [
-        "food_item_id", "food_item_te",
-        "food_category_id", "food_category_te",
-        "cuisine_id", "cuisine_te",
-        "wine_category_id", "wine_category_te",
-        "wine_type_id", "wine_type_te",
-        "wine_cuisine_cross_id", "wine_foodcat_cross_id"
-    ]
-
-    # Ensure numeric
-    for col in feature_cols:
-        row[col] = pd.to_numeric(row[col], errors='coerce')
-
-    return row[feature_cols]
-
-# ======================================================
-# 5. Recommendation function (Top 5 Wines)
-# ======================================================
-
-def recommend_top_wines(food_item, food_category, cuisine, preferred_wine_category, top_n=5):
-    """
-    Returns top N wines for given food options.
-    Scores all wines in dataset of the selected wine category.
-    """
-    # Filter wines by selected wine_category
-    wines_subset = df[df["wine_category"] == preferred_wine_category].copy()
-
-    predictions = []
-    for idx, wine_row in wines_subset.iterrows():
-        X = prepare_features_for_wine(
-            food_item=food_item,
-            food_category=food_category,
-            cuisine=cuisine,
-            wine_category=wine_row["wine_category"],
-            wine_type=wine_row["wine_type"]
-        )
-        pred_scaled = model.predict(X)[0]
-        pred = pred_scaled * (max_r - min_r) + min_r
-        predictions.append(pred)
-
-    wines_subset["predicted_score"] = predictions
-    top_wines = wines_subset.sort_values("predicted_score", ascending=False).head(top_n)
-
-    return top_wines[["wine_type", "wine_category", "predicted_score"]]
-
-# ======================================================
-# 6. Streamlit UI
-# ======================================================
-
-st.set_page_config(page_title="Wine Pairing Recommender", page_icon="🍷")
-st.title("🍷 Wine Pairing Recommender")
-st.write("Select your meal and get the top 5 wine recommendations!")
-
-# Dropdowns
-food_item = st.selectbox("Food item:", food_items)
-food_category = st.selectbox("Food category:", food_categories)
+# --- User Inputs ---
+food_item = st.selectbox("Food Item:", food_items)
+food_category = st.selectbox("Food Category:", food_categories)
 cuisine = st.selectbox("Cuisine:", cuisines)
-preferred_wine_category = st.selectbox("Preferred wine category:", wine_categories)
+wine_category_filter = st.selectbox("Wine Category (Preference):", wine_categories)
 
-# Predict button
-if st.button("Recommend Top 5 Wines"):
-    top_wines = recommend_top_wines(
+# --- Button ---
+if st.button("Recommend Wines"):
+    results = recommend_wines(
         food_item=food_item,
         food_category=food_category,
         cuisine=cuisine,
-        preferred_wine_category=preferred_wine_category,
-        top_n=5
+        wine_category_filter=wine_category_filter
     )
 
-    st.subheader("🍷 Top 5 Wine Recommendations")
-    st.dataframe(top_wines.reset_index(drop=True))
-    st.success("Higher score means a better pairing with your food selection.")
+    st.subheader("🍷 Top-5 Recommended Wines")
+    st.dataframe(results)
+
+    st.success("Higher pairing_quality means a better wine–food match.")
