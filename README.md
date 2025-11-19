@@ -4,6 +4,8 @@ PairVino is a data-driven, machine learning-powered application designed to prov
 
 This project was built during the Ironhack Data Analytics Bootcamp as a final project.
 
+Author: Júlia Ribeiro
+
 ---
 
 ## ✨ Project Highlights
@@ -54,7 +56,7 @@ You will need Python 3.8+ and the following libraries:
 * `PyYAML`
 * `joblib`
 
-# # 🚀 Running the Application
+## 🚀 Running the Application
 
 1. Ensure the Data and Model Are in Place
 
@@ -72,7 +74,7 @@ Once started, the app will automatically open in your browser, or you can access
 http://localhost:8501
 
 
-# # 📊 Model Performance
+## 📊 Model Performance
 
 The LightGBM Regressor was selected as the final model due to its superior performance in predicting the pairing_quality score (1–5).
 
@@ -85,7 +87,7 @@ P## Performance Comparison
 | XGBoost                            | 1.4823 | 1.2494 |
 | **LightGBM (Final Model)**         | **≈ 0.28** | **≈ 0.16** |
 
-# # 📌 Conclusion:
+## 📌 Conclusion:
 The very low RMSE and MAE achieved by LightGBM indicate high accuracy when predicting pairing scores, making the recommendations reliable and robust.
 
 
