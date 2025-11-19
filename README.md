@@ -78,8 +78,6 @@ http://localhost:8501
 
 The LightGBM Regressor was selected as the final model due to its superior performance in predicting the pairing_quality score (1–5).
 
-P## Performance Comparison
-
 | Model                              | RMSE   | MAE    |
 |------------------------------------|--------|--------|
 | Collaborative Filtering            | 1.3989 | 1.1765 |
